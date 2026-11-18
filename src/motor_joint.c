@@ -164,6 +164,21 @@ b3Vec3 b3GetMotorJointTorque( b3World* world, b3JointSim* base )
 	return b3MulSV( world->inv_h, b3Add( base->motorJoint.angularVelocityImpulse, base->motorJoint.angularSpringImpulse ) );
 }
 
+// A non-positive cap clears the impulse
+static void b3ClampMotorImpulse( b3Vec3* impulse, float maxImpulse )
+{
+	if ( maxImpulse <= 0.0f )
+	{
+		*impulse = b3Vec3_zero;
+		return;
+	}
+
+	if ( b3LengthSquared( *impulse ) > maxImpulse * maxImpulse )
+	{
+		*impulse = b3MulSV( maxImpulse, b3Normalize( *impulse ) );
+	}
+}
+
 // Point-to-point constraint
 // C = p2 - p1
 // Cdot = v2 - v1
@@ -235,6 +250,34 @@ void b3PrepareMotorJoint( b3JointSim* base, b3StepContext* context )
 		joint->linearSpringImpulse = b3Vec3_zero;
 		joint->angularSpringImpulse = b3Vec3_zero;
 	}
+
+	// Warm start must not apply an impulse the solver will skip
+	float h = context->h;
+	float linearSpringCap = 0.0f;
+	float angularSpringCap = 0.0f;
+	float linearVelocityCap = 0.0f;
+	float angularVelocityCap = 0.0f;
+	if ( joint->maxSpringForce > 0.0f && joint->linearHertz > 0.0f )
+	{
+		linearSpringCap = h * joint->maxSpringForce;
+	}
+	if ( joint->maxSpringTorque > 0.0f && joint->angularHertz > 0.0f )
+	{
+		angularSpringCap = h * joint->maxSpringTorque;
+	}
+	if ( joint->maxVelocityForce > 0.0f )
+	{
+		linearVelocityCap = h * joint->maxVelocityForce;
+	}
+	if ( joint->maxVelocityTorque > 0.0f )
+	{
+		angularVelocityCap = h * joint->maxVelocityTorque;
+	}
+
+	b3ClampMotorImpulse( &joint->linearSpringImpulse, linearSpringCap );
+	b3ClampMotorImpulse( &joint->angularSpringImpulse, angularSpringCap );
+	b3ClampMotorImpulse( &joint->linearVelocityImpulse, linearVelocityCap );
+	b3ClampMotorImpulse( &joint->angularVelocityImpulse, angularVelocityCap );
 }
 
 void b3WarmStartMotorJoint( b3JointSim* base, b3StepContext* context )

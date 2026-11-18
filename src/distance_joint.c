@@ -38,7 +38,16 @@ void b3DistanceJoint_EnableLimit( b3JointId jointId, bool enableLimit )
 	B3_REC( world, DistanceJointEnableLimit, jointId, enableLimit );
 	b3JointSim* base = b3GetJointSimCheckType( jointId, b3_distanceJoint );
 	b3DistanceJoint* joint = &base->distanceJoint;
-	joint->enableLimit = enableLimit;
+	if ( enableLimit != joint->enableLimit )
+	{
+		joint->enableLimit = enableLimit;
+		joint->impulse = 0.0f;
+		if ( enableLimit == false )
+		{
+			joint->lowerImpulse = 0.0f;
+			joint->upperImpulse = 0.0f;
+		}
+	}
 }
 
 bool b3DistanceJoint_IsLimitEnabled( b3JointId jointId )

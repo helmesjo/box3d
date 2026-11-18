@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Erin Catto
 // SPDX-License-Identifier: MIT
 
+#include "joint.h"
 #include "test_macros.h"
 
 #include "box3d/box3d.h"
@@ -777,6 +778,159 @@ static int TestNonDynamicJointDisable( void )
 	return 0;
 }
 
+// Disabling the limit must drop the impulses warm start would keep applying.
+static int TestDistanceLimitImpulse( void )
+{
+	JointFixture f = CreateJointFixture();
+	b3World_EnableSleeping( f.worldId, false );
+	b3World_EnableContinuous( f.worldId, false );
+
+	b3DistanceJointDef def = b3DefaultDistanceJointDef();
+	def.base.bodyIdA = f.groundId;
+	def.base.bodyIdB = f.bodyId;
+	def.enableSpring = true;
+	def.enableLimit = true;
+	def.hertz = 2.0f;
+	def.dampingRatio = 0.5f;
+	def.length = 4.0f;
+	def.minLength = 0.5f;
+	def.maxLength = 2.0f;
+	b3JointId jointId = b3CreateDistanceJoint( f.worldId, &def );
+
+	b3Body_SetTransform( f.bodyId, (b3Pos){ 0.0f, 1.0f, 0.0f }, b3Quat_identity );
+	b3Body_SetLinearVelocity( f.bodyId, (b3Vec3){ 0.0f, 30.0f, 0.0f } );
+
+	bool caught = false;
+	for ( int i = 0; i < 40; ++i )
+	{
+		b3World_Step( f.worldId, 1.0f / 60.0f, 1 );
+		b3DistanceJoint* joint = &b3GetJointSimCheckType( jointId, b3_distanceJoint )->distanceJoint;
+		if ( joint->upperImpulse > 1.0f )
+		{
+			caught = true;
+			break;
+		}
+	}
+	ENSURE( caught );
+
+	b3Body_SetLinearVelocity( f.bodyId, b3Vec3_zero );
+	b3Body_SetAngularVelocity( f.bodyId, b3Vec3_zero );
+
+	float lengthBefore = b3DistanceJoint_GetCurrentLength( jointId );
+	b3DistanceJoint_EnableLimit( jointId, false );
+	b3World_Step( f.worldId, 1.0f / 60.0f, 1 );
+
+	b3DistanceJoint* joint = &b3GetJointSimCheckType( jointId, b3_distanceJoint )->distanceJoint;
+	ENSURE( joint->lowerImpulse == 0.0f );
+	ENSURE( joint->upperImpulse == 0.0f );
+	ENSURE( b3DistanceJoint_GetCurrentLength( jointId ) > lengthBefore - 0.01f );
+
+	joint->impulse = 3.0f;
+	b3DistanceJoint_EnableLimit( jointId, true );
+	ENSURE( joint->impulse == 0.0f );
+
+	b3DestroyWorld( f.worldId );
+	return 0;
+}
+
+// Build a spring impulse, then disable that channel through hertz or its force cap.
+static int TestMotorChannel( bool linear, bool clearHertz )
+{
+	JointFixture f = CreateJointFixture();
+	b3World_EnableSleeping( f.worldId, false );
+
+	b3MotorJointDef def = b3DefaultMotorJointDef();
+	SetCommonFrames( &def.base, &f );
+	if ( linear )
+	{
+		def.linearHertz = 8.0f;
+		def.linearDampingRatio = 0.2f;
+		def.maxSpringForce = 500.0f;
+	}
+	else
+	{
+		def.angularHertz = 8.0f;
+		def.angularDampingRatio = 0.2f;
+		def.maxSpringTorque = 200.0f;
+	}
+
+	b3JointId jointId = b3CreateMotorJoint( f.worldId, &def );
+	if ( linear )
+	{
+		b3Body_SetTransform( f.bodyId, (b3Pos){ 2.0f, 4.0f, 0.0f }, b3Quat_identity );
+	}
+	else
+	{
+		b3Quat rotation = b3MakeQuatFromAxisAngle( b3Vec3_axisY, B3_PI / 2.0f );
+		b3Body_SetTransform( f.bodyId, (b3Pos){ 0.0f, 4.0f, 0.0f }, rotation );
+	}
+
+	bool built = false;
+	b3Vec3 cached = b3Vec3_zero;
+	for ( int i = 0; i < 20; ++i )
+	{
+		b3World_Step( f.worldId, 1.0f / 60.0f, 1 );
+		b3MotorJoint* joint = &b3GetJointSimCheckType( jointId, b3_motorJoint )->motorJoint;
+		cached = linear ? joint->linearSpringImpulse : joint->angularSpringImpulse;
+		if ( b3LengthSquared( cached ) > 0.25f )
+		{
+			built = true;
+			break;
+		}
+	}
+	ENSURE( built );
+
+	b3Vec3 velocityBefore = linear ? b3Body_GetLinearVelocity( f.bodyId ) : b3Body_GetAngularVelocity( f.bodyId );
+	if ( clearHertz )
+	{
+		if ( linear )
+		{
+			b3MotorJoint_SetLinearHertz( jointId, 0.0f );
+		}
+		else
+		{
+			b3MotorJoint_SetAngularHertz( jointId, 0.0f );
+		}
+	}
+	else if ( linear )
+	{
+		b3MotorJoint_SetMaxSpringForce( jointId, 0.0f );
+	}
+	else
+	{
+		b3MotorJoint_SetMaxSpringTorque( jointId, 0.0f );
+	}
+
+	b3World_Step( f.worldId, 1.0f / 60.0f, 1 );
+
+	b3MotorJoint* joint = &b3GetJointSimCheckType( jointId, b3_motorJoint )->motorJoint;
+	cached = linear ? joint->linearSpringImpulse : joint->angularSpringImpulse;
+	ENSURE( b3LengthSquared( cached ) == 0.0f );
+
+	b3Vec3 velocityAfter = linear ? b3Body_GetLinearVelocity( f.bodyId ) : b3Body_GetAngularVelocity( f.bodyId );
+	ENSURE( b3Length( b3Sub( velocityAfter, velocityBefore ) ) < 0.01f );
+
+	b3DestroyWorld( f.worldId );
+	return 0;
+}
+
+// A disabled motor channel must not warm start its cached impulse.
+static int TestMotorDisabledChannels( void )
+{
+	for ( int linear = 0; linear < 2; ++linear )
+	{
+		for ( int clearHertz = 0; clearHertz < 2; ++clearHertz )
+		{
+			if ( TestMotorChannel( linear != 0, clearHertz != 0 ) != 0 )
+			{
+				return 1;
+			}
+		}
+	}
+
+	return 0;
+}
+
 int JointTest( void )
 {
 	RUN_SUBTEST( TestParallelJoint );
@@ -792,6 +946,8 @@ int JointTest( void )
 	RUN_SUBTEST( TestWheelJoint );
 	RUN_SUBTEST( TestCreateJointClearsContacts );
 	RUN_SUBTEST( TestNonDynamicJointDisable );
+	RUN_SUBTEST( TestDistanceLimitImpulse );
+	RUN_SUBTEST( TestMotorDisabledChannels );
 
 	return 0;
 }
