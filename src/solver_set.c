@@ -225,12 +225,19 @@ void b3TrySleepIsland( b3World* world, int islandId )
 
 			// Update the body move event to indicate this body fell asleep
 			// It could happen the body is forced asleep before it ever moves.
+			// The index may be out of range or name another body.
 			if ( body->bodyMoveIndex != B3_NULL_INDEX )
 			{
-				b3BodyMoveEvent* moveEvent = b3Array_Get( world->bodyMoveEvents, body->bodyMoveIndex );
-				B3_ASSERT( moveEvent->bodyId.index1 - 1 == bodyId );
-				B3_ASSERT( moveEvent->bodyId.generation == body->generation );
-				moveEvent->fellAsleep = true;
+				int moveIndex = body->bodyMoveIndex;
+				if ( 0 <= moveIndex && moveIndex < world->bodyMoveEvents.count )
+				{
+					b3BodyMoveEvent* moveEvent = world->bodyMoveEvents.data + moveIndex;
+					if ( moveEvent->bodyId.index1 - 1 == bodyId && moveEvent->bodyId.generation == body->generation )
+					{
+						moveEvent->fellAsleep = true;
+					}
+				}
+
 				body->bodyMoveIndex = B3_NULL_INDEX;
 			}
 

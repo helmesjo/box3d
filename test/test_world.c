@@ -2018,6 +2018,82 @@ static int TestOverlapStaticDuringStep( void )
 	return 0;
 }
 
+// A forced sleep can see a body move index after the event buffer is cleared or shrunk.
+// fellAsleep is set only when that slot still names the body.
+static int TestStaleBodyMoveIndex( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = (b3Vec3){ 0.0f, -10.0f, 0.0f };
+	worldDef.enableSleep = false;
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+
+	b3BodyDef bodyDef = b3DefaultBodyDef();
+	bodyDef.type = b3_dynamicBody;
+	bodyDef.position = (b3Pos){ 0.0f, 2.0f, 0.0f };
+	b3BodyId bodyIdA = b3CreateBody( worldId, &bodyDef );
+	bodyDef.position = (b3Pos){ 8.0f, 2.0f, 0.0f };
+	b3BodyId bodyIdB = b3CreateBody( worldId, &bodyDef );
+
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	shapeDef.density = 1.0f;
+	b3BoxHull box = b3MakeCubeHull( 0.5f );
+	b3CreateHullShape( bodyIdA, &shapeDef, &box.base );
+	b3CreateHullShape( bodyIdB, &shapeDef, &box.base );
+
+	b3World* world = b3GetWorldFromId( worldId );
+	float timeStep = 1.0f / 60.0f;
+	b3World_Step( worldId, timeStep, 4 );
+
+	b3Body* bodyA = b3GetBodyFullId( world, bodyIdA );
+	b3Body* bodyB = b3GetBodyFullId( world, bodyIdB );
+	int indexA = bodyA->bodyMoveIndex;
+	int indexB = bodyB->bodyMoveIndex;
+	ENSURE( indexA != B3_NULL_INDEX && indexB != B3_NULL_INDEX && indexA != indexB );
+
+	b3Body_SetAwake( bodyIdA, false );
+	b3Body_SetAwake( bodyIdB, false );
+	ENSURE( bodyA->bodyMoveIndex == B3_NULL_INDEX );
+	ENSURE( bodyB->bodyMoveIndex == B3_NULL_INDEX );
+	ENSURE( world->bodyMoveEvents.data[indexA].fellAsleep == true );
+	ENSURE( world->bodyMoveEvents.data[indexB].fellAsleep == true );
+
+	b3Body_SetAwake( bodyIdA, true );
+	b3Body_SetAwake( bodyIdB, true );
+	b3World_Step( worldId, timeStep, 4 );
+	indexA = bodyA->bodyMoveIndex;
+	indexB = bodyB->bodyMoveIndex;
+	ENSURE( indexA != B3_NULL_INDEX && indexA < indexB );
+	ENSURE( world->bodyMoveEvents.data[indexA].fellAsleep == false );
+
+	// Drop the higher slot. The lower slot still names its body.
+	world->bodyMoveEvents.count = indexB;
+	b3Body_SetAwake( bodyIdB, false );
+	ENSURE( bodyB->bodyMoveIndex == B3_NULL_INDEX );
+	ENSURE( world->bodyMoveEvents.data[indexA].fellAsleep == false );
+
+	b3Body_SetAwake( bodyIdA, false );
+	ENSURE( bodyA->bodyMoveIndex == B3_NULL_INDEX );
+	ENSURE( world->bodyMoveEvents.data[indexA].fellAsleep == true );
+
+	b3Body_SetAwake( bodyIdA, true );
+	b3Body_SetAwake( bodyIdB, true );
+	b3World_Step( worldId, timeStep, 4 );
+
+	b3BodyMoveEvent* eventA = world->bodyMoveEvents.data + bodyA->bodyMoveIndex;
+	ENSURE( eventA->bodyId.index1 - 1 == bodyA->id && eventA->bodyId.generation == bodyA->generation );
+	eventA->bodyId.generation = (uint16_t)( eventA->bodyId.generation + 1 );
+	int keptIndex = bodyB->bodyMoveIndex;
+
+	b3Body_SetAwake( bodyIdA, false );
+	ENSURE( bodyA->bodyMoveIndex == B3_NULL_INDEX );
+	ENSURE( eventA->fellAsleep == false );
+	ENSURE( bodyB->bodyMoveIndex == keptIndex );
+	ENSURE( world->bodyMoveEvents.data[keptIndex].fellAsleep == false );
+
+	b3DestroyWorld( worldId );
+	return 0;
+}
+
 int WorldTest( void )
 {
 	RUN_SUBTEST( HelloWorld );
@@ -2047,6 +2123,7 @@ int WorldTest( void )
 	RUN_SUBTEST( TestCompoundShapeCount );
 	RUN_SUBTEST( BodySimLocatorTest );
 	RUN_SUBTEST( TestOverlapStaticDuringStep );
+	RUN_SUBTEST( TestStaleBodyMoveIndex );
 
 	return 0;
 }
